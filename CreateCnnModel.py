@@ -221,11 +221,63 @@ def create_resnet50(
         'conv1',
         num_input_channels,
         64,
-        kernel=5,
-        stride=2,
+        weight_init=("MSRAFill", {}),
+        kernel=conv1_kernel,
+        stride=conv1_stride,
+        pad=3,
+        no_bias=no_bias
     )
-    last_out = brew.fc(model, data, 'last_out', 75264, num_labels)
-   
+
+    brew.spatial_bn(
+        model,
+        'conv1',
+        'conv1_spatbn_relu',
+        64,
+        epsilon=1e-3,
+        momentum=0.1,
+        is_test=is_test
+    )
+    brew.relu(model, 'conv1_spatbn_relu', 'conv1_spatbn_relu')
+    brew.max_pool(model, 'conv1_spatbn_relu', 'pool1', kernel=3, stride=2)
+
+    # Residual blocks...
+    builder = ResNetBuilder(model, 'pool1', no_bias=no_bias,
+                            is_test=is_test, spatial_bn_mom=0.1)
+
+    # conv2_x (ref Table 1 in He et al. (2015))
+    builder.add_bottleneck(64, 64, 256)
+    builder.add_bottleneck(256, 64, 256)
+    builder.add_bottleneck(256, 64, 256)
+
+    # conv3_x
+    builder.add_bottleneck(256, 128, 512, down_sampling=True)
+    for _ in range(1, 4):
+        builder.add_bottleneck(512, 128, 512)
+
+    # conv4_x
+    builder.add_bottleneck(512, 256, 1024, down_sampling=True)
+    for _ in range(1, 6):
+        builder.add_bottleneck(1024, 256, 1024)
+
+    # conv5_x
+    builder.add_bottleneck(1024, 512, 2048, down_sampling=True)
+    builder.add_bottleneck(2048, 512, 2048)
+    builder.add_bottleneck(2048, 512, 2048)
+
+    # Final layers
+    final_avg = brew.average_pool(
+        model,
+        builder.prev_blob,
+        'final_avg',
+        kernel=final_avg_kernel,
+        stride=1,
+    )
+
+    # Final dimension of the "image" is reduced to 7x7
+    last_out = brew.fc(
+        model, final_avg, 'last_out_L{}'.format(num_labels), 2048, num_labels
+    )
+
     if no_loss:
         return last_out
 
@@ -240,7 +292,65 @@ def create_resnet50(
     else:
         # For inference, we just return softmax
         return brew.softmax(model, last_out, "softmax")
+def create_mnist( 
+    model, data, 
+    num_input_channels, 
+    num_labels, 
+    label=None, 
+    is_test=False, 
+    no_loss=False, 
+    no_bias=0, 
+    conv1_kernel=7, 
+    conv1_stride=2, 
+    final_avg_kernel=7, ): 
+    # Image size: 28 x 28 -> 24 x 24 
+    conv1 = brew.conv(model,data, 'conv1', dim_in=1, dim_out=20, kernel=5) 
+    # Image size: 24 x 24 -> 12 x 12 
+    pool1 = brew.max_pool(model,conv1, 'pool1', kernel=2, stride=2) 
+    # Image size: 12 x 12 -> 8 x 8 
+    conv2 = brew.conv(model,pool1, 'conv2', dim_in=20, dim_out=50, kernel=5) 
+    # Image size: 8 x 8 -> 4 x 4 
+    pool2 = brew.max_pool(model,conv2, 'pool2', kernel=2, stride=2) 
+    # 50 * 4 * 4 stands for dim_out from previous layer multiplied by the image size 
+    fc3 = brew.fc(model,pool2, 'fc3', dim_in=50 * 4* 4, dim_out=500)
+    fc3 = brew.relu(model,fc3, fc3) 
+    
+    pred = brew.fc(model,fc3, 'pred', 500, 10) 
+    
+    if no_loss:
+        print("no_loss")
+        return pred
 
+    # If we create model for training, use softmax-with-loss
+    if (label is not None):
+        softmax = brew.softmax(model, pred, 'softmax')
+        xent = model.LabelCrossEntropy([softmax, label], 'xent')
+        # compute the expected loss
+        loss = model.AveragedLoss(xent, "loss")
+        '''(softmax, loss) = model.SoftmaxWithLoss(
+            [pred, label],
+            ["softmax", "loss"],
+        )'''
+
+        return (softmax, loss)
+    else:
+        # For inference, we just return softmax
+        return brew.softmax(model, pred, "softmax")
+    '''if no_loss:
+        print("no_loss")
+        return pred
+
+    # If we create model for training, use softmax-with-loss
+    if (label is not None):
+        (softmax, loss) = model.SoftmaxWithLoss(
+            [pred, label],
+            ["softmax", "loss"],
+        )
+
+        return (softmax, loss)
+    else:
+        # For inference, we just return softmax
+        return brew.softmax(model, pred, "softmax")'''
 def Create_Cnn(
     model,
     data,
@@ -254,23 +364,36 @@ def Create_Cnn(
     conv1_stride=2,
     final_avg_kernel=7,
 ):
-    conv1 = brew.conv(model, data, 'conv1', dim_in=num_input_channels, dim_out=20, kernel=conv1_kernel)
+    conv1 = brew.conv(model, data, 'conv1', dim_in=num_input_channels, dim_out=32, kernel=5)
     # Image size: 24 x 24 -> 12 x 12
-    pool1 = brew.max_pool(model, conv1, 'pool1', kernel=2, stride=2)
+    pool1 = brew.max_pool(model, conv1, 'pool1', kernel=3, stride=2)
     # Image size: 12 x 12 -> 8 x 8
-    conv2 = brew.conv(model, pool1, 'conv2', dim_in=20, dim_out=50, kernel=5)
+    conv2 = brew.conv(model, pool1, 'conv2', dim_in=32, dim_out=48, kernel=3)
     # Image size: 8 x 8 -> 4 x 4
-    pool2 = brew.max_pool(model, conv2, 'pool2', kernel=2, stride=2)
+    pool2 = brew.max_pool(model, conv2, 'pool2', kernel=3, stride=2)
     # 50 * 4 * 4 stands for dim_out from previous layer multiplied by the image size
-    fc3 = brew.fc(model, pool2, 'fc3', dim_in=50 * 3 * 3, dim_out=500)
+    conv3 = brew.conv(model, pool2, 'conv3', dim_in=48, dim_out=64, kernel=3)
+    fc3 = brew.fc(model, conv3, 'fc3', dim_in=64 * 2 * 2, dim_out=500)
     fc3 = brew.relu(model, fc3, fc3)
-    pred = brew.fc(model, fc3, 'pred', 500, num_labels)
-
+    dropout1 = brew.dropout(model, fc3, 'dropout1', ratio=0.5, is_test=0)
+    
+    pred = brew.fc(model, dropout1, 'pred', 500, num_labels)
+    # 50 * 4 * 4 stands for dim_out from previous layer multiplied by the image size
+    #pred1 = brew.fc(model, data, 'pred1', num_input_channels * 28 * 28, 500)
+    #pred = brew.fc(model, pred1, 'pred', 500, num_labels)
+    #pred = brew.fc(model, fc3, 'pred', 500, num_labels)
+    #pred = brew.fc(model, data, 'pred', num_input_channels*227*227, num_labels)
+    
     if no_loss:
+        print("no_loss")
         return pred
 
     # If we create model for training, use softmax-with-loss
     if (label is not None):
+        '''softmax = brew.softmax(model, pred, 'softmax')
+        xent = model.LabelCrossEntropy([softmax, label], 'xent')
+        # compute the expected loss
+        loss = model.AveragedLoss(xent, "loss")'''
         (softmax, loss) = model.SoftmaxWithLoss(
             [pred, label],
             ["softmax", "loss"],
