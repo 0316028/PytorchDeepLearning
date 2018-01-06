@@ -24,13 +24,12 @@ import logging
 import numpy as np
 import time
 import os
-import CreateCnnModel as CreateCnnModel
-
+import random
 from caffe2.python import core, workspace, experiment_util, data_parallel_model
 from caffe2.python import data_parallel_model_utils, dyndep, optimizer
 from caffe2.python import timeout_guard, model_helper, brew
 from caffe2.proto import caffe2_pb2
-
+import CreateCnnModel as CreateCnnModel
 import caffe2.python.models.resnet as resnet
 from caffe2.python.modeling.initializers import Initializer, pFP16Initializer
 import caffe2.python.predictor.predictor_exporter as pred_exp
@@ -58,8 +57,6 @@ log.setLevel(logging.DEBUG)
 dyndep.InitOpsLibrary('@/caffe2/caffe2/distributed:file_store_handler_ops')
 dyndep.InitOpsLibrary('@/caffe2/caffe2/distributed:redis_store_handler_ops')
 
-m_strModelName = "Cnn_Mnist_Distributed"
-
 
 def AddImageInput(model, reader, batch_size, img_size, dtype, is_test):
     '''
@@ -83,6 +80,23 @@ def AddImageInput(model, reader, batch_size, img_size, dtype, is_test):
 
     data = model.StopGradient(data, data)
     
+def AddInput(model,reader,batch_size, img_size, db, dtype, is_test):
+    '''
+    The image input operator loads image and label data from the reader and
+    applies transformations to the images (random cropping, mirroring, ...).
+    '''
+    data_uint8, label = model.net.TensorProtosDBInput(
+        reader, ["data_uint8", "label"], batch_size=batch_size,
+        )
+    # cast the data to float
+    #print('Shape : ' + type(data_uint8))
+    data = model.Cast(data_uint8, "data", to=core.DataType.FLOAT)
+    # scale data from [0,255] down to [0,1]
+    data = model.Scale(data, data, scale=float(1./256))
+    # don't need the gradient for the backward pass
+    
+    data = model.StopGradient(data, data)
+
 
 def AddNullInput(model, reader, batch_size, img_size, dtype):
     '''
@@ -240,8 +254,6 @@ def RunEpoch(
     return epoch + 1
 
 
-
-
 def Train(args):
     # Either use specified device list or generate one
     if args.gpus is not None:
@@ -362,16 +374,16 @@ def Train(args):
         loss = model.Scale(loss, scale=loss_scale)
         brew.accuracy(model, [softmax, "label"], "accuracy")
         return [loss]
-    def AddCnnModel(model,loss_scale):
+    def create_cnn_ops(model, loss_scale):
         initializer = (pFP16Initializer if args.dtype == 'float16'
-                           else Initializer)
+                       else Initializer)
 
         with brew.arg_scope([brew.conv, brew.fc],
                             WeightInitializer=initializer,
                             BiasInitializer=initializer,
                             enable_tensor_core=args.enable_tensor_core,
                             float16_compute=args.float16_compute):
-            pred = CreateCnnModel.Create_Cnn(
+            pred = CreateCnnModel.create_mnist(
                 model,
                 "data",
                 num_input_channels=args.num_channels,
@@ -383,8 +395,14 @@ def Train(args):
         if args.dtype == 'float16':
             pred = model.net.HalfToFloat(pred, pred + '_fp32')
 
-        softmax, loss = model.SoftmaxWithLoss([pred, 'label'],
+        '''softmax, loss = model.SoftmaxWithLoss([pred, 'label'],
                                               ['softmax', 'loss'])
+        loss = model.Scale(loss, scale=loss_scale)
+        brew.accuracy(model, [softmax, "label"], "accuracy")'''
+        softmax = brew.softmax(model, pred, 'softmax')
+        xent = model.LabelCrossEntropy([softmax, "label"], 'xent')
+        # compute the expected loss
+        loss = model.AveragedLoss(xent, "loss")
         loss = model.Scale(loss, scale=loss_scale)
         brew.accuracy(model, [softmax, "label"], "accuracy")
         return [loss]
@@ -405,8 +423,9 @@ def Train(args):
                 gamma=0.1
             )
         else:
+            #build_multi_precision_sgd
             optimizer.add_weight_decay(model, args.weight_decay)
-            opt = optimizer.build_multi_precision_sgd(
+            '''opt = optimizer.build_adam(
                 model,
                 args.base_learning_rate,
                 momentum=0.9,
@@ -414,6 +433,13 @@ def Train(args):
                 policy="step",
                 stepsize=stepsz,
                 gamma=0.1
+            )'''
+            opt = optimizer.build_sgd(
+                model,
+                args.base_learning_rate,
+                policy="step",
+                stepsize=1,
+                gamma=0.999
             )
         return opt
 
@@ -439,11 +465,12 @@ def Train(args):
         )
 
         def add_image_input(model):
-            AddImageInput(
+            AddInput(
                 model,
                 reader,
                 batch_size=batch_per_device,
                 img_size=args.image_size,
+                db=args.train_data,
                 dtype=args.dtype,
                 is_test=False,
             )
@@ -461,7 +488,7 @@ def Train(args):
     data_parallel_model.Parallelize(
         train_model,
         input_builder_fun=add_image_input,
-        forward_pass_builder_fun=AddCnnModel,
+        forward_pass_builder_fun=create_cnn_ops,
         optimizer_builder_fun=add_optimizer,
         post_sync_builder_fun=add_post_sync_ops,
         devices=gpus,
@@ -518,7 +545,7 @@ def Train(args):
         data_parallel_model.Parallelize(
             test_model,
             input_builder_fun=test_input_fn,
-            forward_pass_builder_fun=AddCnnModel,
+            forward_pass_builder_fun=create_cnn_ops,
             post_sync_builder_fun=add_post_sync_ops,
             param_update_builder_fun=None,
             devices=gpus,
