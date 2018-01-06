@@ -80,7 +80,7 @@ def AddImageInput(model, reader, batch_size, img_size, dtype, is_test):
 
     data = model.StopGradient(data, data)
     
-def AddInput(model,reader,batch_size, img_size, db, dtype, is_test):
+def AddInput(model,reader,batch_size, img_size, dtype, is_test):
     '''
     The image input operator loads image and label data from the reader and
     applies transformations to the images (random cropping, mirroring, ...).
@@ -206,14 +206,14 @@ def RunEpoch(
             dt = t2 - t1
 
         fmt = "Finished iteration {}/{} of epoch {} ({:.2f} images/sec)"
-        log.info(fmt.format(i + 1, epoch_iters, epoch, total_batch_size / dt))
+        #log.info(fmt.format(i + 1, epoch_iters, epoch, total_batch_size / dt))
         prefix = "{}_{}".format(
             train_model._device_prefix,
             train_model._devices[0])
         accuracy = workspace.FetchBlob(prefix + '/accuracy')
         loss = workspace.FetchBlob(prefix + '/loss')
         train_fmt = "Training loss: {}, accuracy: {}"
-        log.info(train_fmt.format(loss, accuracy))
+        #log.info(train_fmt.format(loss, accuracy))
 
     num_images = epoch * epoch_iters * total_batch_size
     prefix = "{}_{}".format(train_model._device_prefix, train_model._devices[0])
@@ -470,7 +470,6 @@ def Train(args):
                 reader,
                 batch_size=batch_per_device,
                 img_size=args.image_size,
-                db=args.train_data,
                 dtype=args.dtype,
                 is_test=False,
             )
@@ -533,7 +532,7 @@ def Train(args):
         )
 
         def test_input_fn(model):
-            AddImageInput(
+            AddInput(
                 model,
                 test_reader,
                 batch_size=batch_per_device,
@@ -675,4 +674,7 @@ def main():
 
 if __name__ == '__main__':
     workspace.GlobalInit(['caffe2', '--caffe2_log_level=2'])
+    
+    start_time = time.time()
     main()
+    print("--- %s seconds ---" % (time.time() - start_time))
