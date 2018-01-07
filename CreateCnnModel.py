@@ -364,7 +364,7 @@ def Create_Cnn(
     conv1_stride=2,
     final_avg_kernel=7,
 ):
-    conv1 = brew.conv(model, data, 'conv1', dim_in=num_input_channels, dim_out=32, kernel=5)
+    conv1 = brew.conv(model, data, 'conv1', dim_in=1, dim_out=32, kernel=5)
     # Image size: 24 x 24 -> 12 x 12
     pool1 = brew.max_pool(model, conv1, 'pool1', kernel=3, stride=2)
     # Image size: 12 x 12 -> 8 x 8
@@ -390,14 +390,14 @@ def Create_Cnn(
 
     # If we create model for training, use softmax-with-loss
     if (label is not None):
-        '''softmax = brew.softmax(model, pred, 'softmax')
+        softmax = brew.softmax(model, pred, 'softmax')
         xent = model.LabelCrossEntropy([softmax, label], 'xent')
         # compute the expected loss
-        loss = model.AveragedLoss(xent, "loss")'''
-        (softmax, loss) = model.SoftmaxWithLoss(
+        loss = model.AveragedLoss(xent, "loss")
+        '''(softmax, loss) = model.SoftmaxWithLoss(
             [pred, label],
             ["softmax", "loss"],
-        )
+        )'''
 
         return (softmax, loss)
     else:
