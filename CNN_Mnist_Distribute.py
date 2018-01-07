@@ -383,7 +383,7 @@ def Train(args):
                             BiasInitializer=initializer,
                             enable_tensor_core=args.enable_tensor_core,
                             float16_compute=args.float16_compute):
-            pred = CreateCnnModel.create_mnist(
+            pred = CreateCnnModel.Create_Cnn(
                 model,
                 "data",
                 num_input_channels=args.num_channels,
@@ -482,8 +482,6 @@ def Train(args):
                     param_info.blob,
                     param_info.blob_copy[core.DataType.FLOAT]
                 )
-
-    # Create parallelized model
     data_parallel_model.Parallelize(
         train_model,
         input_builder_fun=add_image_input,
@@ -495,6 +493,8 @@ def Train(args):
         optimize_gradient_memory=False,
         cpu_device=args.use_cpu,
         shared_model=args.use_cpu,
+        num_threads_per_device = 20,
+        max_concurrent_distributed_ops = 200,
     )
 
     if args.model_parallel:
@@ -540,14 +540,14 @@ def Train(args):
                 dtype=args.dtype,
                 is_test=True,
             )
-
+        
         data_parallel_model.Parallelize(
             test_model,
             input_builder_fun=test_input_fn,
             forward_pass_builder_fun=create_cnn_ops,
             post_sync_builder_fun=add_post_sync_ops,
             param_update_builder_fun=None,
-            devices=gpus,
+            devices=[0],
             cpu_device=args.use_cpu,
         )
         workspace.RunNetOnce(test_model.param_init_net)
@@ -667,7 +667,8 @@ def main():
                         help="Transport to use for distributed run [tcp|ibverbs]")
     parser.add_argument("--distributed_interfaces", type=str, default="",
                         help="Network interfaces to use for distributed run")
-
+    parser.add_argument("--num_cpu", type=int, default=1)
+    parser.add_argument("--use_multicore", type=bool, default=False)
     args = parser.parse_args()
 
     Train(args)
